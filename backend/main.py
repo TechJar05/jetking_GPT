@@ -61,22 +61,20 @@ app = FastAPI(title="Training Institute Chatbot API")
 
 
 # ✅ Allowed origins
-origins = [
-    "http://localhost:5174",        # your local React dev
-    "https://jetking-gpt.tjdem.online",  # your deployed frontend (if any)
-]
+allow_origins=["https://jetkinggptt.netlify.app/"]
+# ✅ Allow all origins (not recommended for production)
 
-# ✅ Add CORS middleware
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,          # or ["*"] for all (not recommended in prod)
+    allow_origins=["*"],  # Allow all domains
     allow_credentials=True,
-    allow_methods=["*"],            # allow all methods (GET, POST, etc.)
-    allow_headers=["*"],            # allow all headers
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allow all headers
 )
+
 class QuestionRequest(BaseModel):
     question: str
-
 @app.get("/")
 def root():
     return {"message": "Welcome to Training Institute Chatbot API"}
