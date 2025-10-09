@@ -212,7 +212,7 @@ from langchain_openai import ChatOpenAI
 from langchain_community.tools import QuerySQLDatabaseTool
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from backend.db_connection import db
+from backend.db import db
 
 # Identify the flattened view
 available_tables = db.get_usable_table_names()

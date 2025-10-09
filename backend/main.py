@@ -88,4 +88,7 @@ def student_info(name: str):
     student = get_student_by_name(name)
     return student or {"error": "Student not found"}
 
-
+@app.post("/ask/")
+async def ask_route(payload: dict):
+    question = payload.get("question")
+    return ask_question(question)
