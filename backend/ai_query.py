@@ -157,6 +157,21 @@ def ask_question(question: str):
     try:
         sql_query = generate_sql(question)
         result = execute_query.invoke(sql_query)
+
+        # If result is empty or None
+        if not result:
+            polite_answer = (
+                "I couldn’t find any matching data for your question. "
+                "You might want to try rephrasing or asking in a different way."
+            )
+            return {
+                "question": question,
+                "sql_query": sql_query,
+                "result": result,
+                "answer": polite_answer
+            }
+
+        # Normal success flow
         answer = answer_chain.invoke({
             "question": question,
             "query": sql_query,
@@ -170,7 +185,24 @@ def ask_question(question: str):
         }
 
     except Exception as e:
+        # Log error internally if needed
+        error_message = str(e).lower()
+
+        # If it's an SQL or technical error, suppress it
+        if any(word in error_message for word in ["sql", "snowflake", "traceback", "invalid", "error", "exception"]):
+            polite_response = (
+                "Sorry, something went wrong while processing your request. "
+                "Please try again or ask your question in a different way."
+            )
+        else:
+            polite_response = (
+                "I'm unable to fetch that information right now. "
+                "Please try again in a moment."
+            )
+
         return {
             "question": question,
-            "error": str(e)
+            "sql_query": None,
+            "result": None,
+            "answer": polite_response
         }

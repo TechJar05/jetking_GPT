@@ -55,9 +55,25 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from backend.crud import get_top_students, get_student_by_name
 from backend.ai_query import ask_question
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Training Institute Chatbot API")
 
+
+# ✅ Allowed origins
+origins = [
+    "http://localhost:5174",        # your local React dev
+    "https://jetking-gpt.tjdem.online",  # your deployed frontend (if any)
+]
+
+# ✅ Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,          # or ["*"] for all (not recommended in prod)
+    allow_credentials=True,
+    allow_methods=["*"],            # allow all methods (GET, POST, etc.)
+    allow_headers=["*"],            # allow all headers
+)
 class QuestionRequest(BaseModel):
     question: str
 
