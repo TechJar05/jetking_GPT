@@ -40,7 +40,7 @@
 
 
 
-from db import db
+from backend.db import db
 
 def get_top_students(limit: int = 5):
     query = f"""

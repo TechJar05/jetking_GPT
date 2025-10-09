@@ -3,7 +3,7 @@ from langchain_openai import ChatOpenAI
 from langchain_community.tools import QuerySQLDatabaseTool
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from db import db
+from backend.db import db
 
 # ------------------------------------------------------------------------------
 # Step 1: Discover the view

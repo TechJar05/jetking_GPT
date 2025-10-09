@@ -53,8 +53,8 @@
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-from crud import get_top_students, get_student_by_name
-from ai_query import ask_question
+from backend.crud import get_top_students, get_student_by_name
+from backend.ai_query import ask_question
 
 app = FastAPI(title="Training Institute Chatbot API")
 
