@@ -88,7 +88,4 @@ def student_info(name: str):
     student = get_student_by_name(name)
     return student or {"error": "Student not found"}
 
-@app.post("/ask/")
-def ask_ai(req: QuestionRequest):
-    """Ask chatbot a natural language question"""
-    return ask_question(req.question)
+
