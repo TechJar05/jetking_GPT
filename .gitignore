@@ -3,3 +3,9 @@ venv
 .env
 excel_files/
 excel_files
+students_schema.json
+merge_clean_student_data.py
+list_excel_columns.py
+ask_gpt.py
+insert_data.py
+__pycache__/

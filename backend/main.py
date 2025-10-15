@@ -54,27 +54,22 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from backend.crud import get_top_students, get_student_by_name
-from backend.ai_query import ask_question
+from backend.ai_agent import ask_question  # <-- updated import
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Training Institute Chatbot API")
 
-
-# ✅ Allowed origins
-allow_origins=["https://jetkinggptt.netlify.app/"]
-# ✅ Allow all origins (not recommended for production)
-
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all domains
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 class QuestionRequest(BaseModel):
     question: str
+
 @app.get("/")
 def root():
     return {"message": "Welcome to Training Institute Chatbot API"}
@@ -89,6 +84,6 @@ def student_info(name: str):
     return student or {"error": "Student not found"}
 
 @app.post("/ask/")
-async def ask_route(payload: dict):
-    question = payload.get("question")
-    return ask_question(question)
+async def ask_route(payload: QuestionRequest):
+    query = payload.question
+    return ask_question(query)
