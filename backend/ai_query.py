@@ -31,7 +31,6 @@ print("=" * 70)
 print("🔗 Connecting to Snowflake...")
 
 # --- Snowflake Connection ---
-# remove include_tables to prevent ValueError
 db = SQLDatabase.from_uri(
     snowflake_uri,
     view_support=True,
@@ -39,10 +38,13 @@ db = SQLDatabase.from_uri(
     max_string_length=100,
 )
 
+# Will be set after detecting table name
+UNIFIED_TABLE_NAME = None
+
 # Minimal get_table_info override
 def minimal_get_table_info(_=None):
-    return """
-TABLE: unified_students
+    return f"""
+TABLE: {UNIFIED_TABLE_NAME}
 Columns (quoted where needed):
 "Student_Name", "Gender", "Course", "First_Name", "Last_Name",
 "Enrollment_Date", "Address", "Center_Name", "Paid_Amount",
@@ -58,17 +60,20 @@ print("✅ Available tables/views:", available_tables)
 FLATTENED_VIEW = next((t for t in available_tables if "FLATTENED_STUDENTS" in t.upper()), None)
 UNIFIED_VIEW = next((t for t in available_tables if "UNIFIED_STUDENTS" in t.upper()), None)
 
+# Determine the actual table name (could be UNIFIED_STUDENTS, unified_students, or "unified_students")
+UNIFIED_TABLE_NAME = UNIFIED_VIEW if UNIFIED_VIEW else "unified_students"
+
 if not FLATTENED_VIEW:
     print("\n❌ ERROR: FLATTENED_STUDENTS view not found!")
 else:
-    print(f"✅ Using views: {FLATTENED_VIEW}, {UNIFIED_VIEW}")
+    print(f"✅ Using views: {FLATTENED_VIEW}, {UNIFIED_TABLE_NAME}")
 
 # --- Detect Columns ---
 print("\n🔍 Detecting actual column names from unified_students...")
 KNOWN_COLUMNS = []
 
 try:
-    describe_result = db.run("DESCRIBE TABLE unified_students")
+    describe_result = db.run(f"DESCRIBE TABLE {UNIFIED_TABLE_NAME}")
     col_matches = re.findall(r"\('([^']+)',\s*'[^']+',\s*'COLUMN'", str(describe_result))
     if col_matches:
         KNOWN_COLUMNS = col_matches
@@ -78,11 +83,13 @@ try:
 except Exception as e:
     print(f"⚠️ DESCRIBE failed: {e}")
     try:
+        # Extract just the table name without schema for INFORMATION_SCHEMA query
+        table_name_only = UNIFIED_TABLE_NAME.split('.')[-1].replace('"', '')
         col_query = f"""
         SELECT COLUMN_NAME 
         FROM {database}.INFORMATION_SCHEMA.COLUMNS 
         WHERE TABLE_SCHEMA = '{schema}' 
-        AND TABLE_NAME = 'UNIFIED_STUDENTS'
+        AND TABLE_NAME = '{table_name_only}'
         ORDER BY ORDINAL_POSITION
         """
         col_result = db.run(col_query)
@@ -109,48 +116,209 @@ def quote_column(col):
 quoted_columns = [quote_column(c) for c in KNOWN_COLUMNS]
 columns_display = ", ".join(quoted_columns[:20])
 
-# --- Minimal Schema for Prompt ---
-MINIMAL_SCHEMA = f"""
+# --- Enhanced Schema with Examples ---
+ENHANCED_SCHEMA = f"""
 DATABASE: {database}.{schema}
-TABLE: unified_students
-Columns: {columns_display}
-{'... and ' + str(len(KNOWN_COLUMNS) - 20) + ' more' if len(KNOWN_COLUMNS) > 20 else ''}
-Use quotes for mixed-case columns, e.g., "Student_Name"
+TABLE: {UNIFIED_TABLE_NAME}
+
+KEY COLUMNS:
+- "Student_Name": Full name of student (use UPPER() + LIKE for search)
+- "First_Name", "Last_Name": Name components
+- "Gender": Male/Female/Other
+- "Course": Course enrolled in
+- "Enrollment_Date": Date of enrollment (format: YYYY-MM-DD or similar)
+- "Center_Name": Training center location
+- "Paid_Amount": Amount paid by student
+- "Balance_Due_Amount": Outstanding balance
+- STUDENT_ID: Unique identifier (no quotes)
+- FILE_COUNT: Number of source files (no quotes)
+
+All columns: {columns_display}
+
+QUERY PATTERNS:
+1. Name search: Use UPPER("Student_Name") LIKE '%NAME%'
+2. Date filters: Use "Enrollment_Date" with LIKE '2024%' or date comparisons
+3. Aggregations: Use COUNT(*), SUM(), AVG() with GROUP BY
+4. Multiple conditions: Combine with AND/OR
+5. IMPORTANT: Always use table name: {UNIFIED_TABLE_NAME}
 """
 
-print("\n📋 Schema loaded successfully.")
+print("\n📋 Enhanced schema loaded successfully.")
 
 # --- LLM ---
 llm = ChatOpenAI(temperature=0, model_name="gpt-4o-mini")
 
-# --- SQL Prompt ---
-sql_prompt = PromptTemplate.from_template(
-    """Generate valid Snowflake SQL for the question below.
+# -------------------------------------------------------------------
+# ✅ Query Normalization Layer
+# -------------------------------------------------------------------
+
+normalization_prompt = PromptTemplate.from_template(
+    """You are a query understanding assistant. Analyze the user's question and extract structured information.
+
+User Question: {question}
+
+Extract and normalize:
+1. **Intent**: What does the user want? (e.g., find_student, count_students, get_payment_info, list_courses, aggregate_data)
+2. **Entities**: Extract key information:
+   - Student names (handle typos/variations)
+   - Dates/Years
+   - Courses
+   - Gender
+   - Centers
+   - Numeric values
+3. **Filters**: What conditions to apply?
+4. **Aggregation**: Any counting, summing, averaging needed?
+5. **Normalized Question**: Rewrite the question clearly for SQL generation
+
+Output format:
+Intent: <intent>
+Entities: <key entities found>
+Filters: <conditions to apply>
+Aggregation: <if any>
+Normalized Question: <clear rewritten question>
+
+Examples:
+
+User Question: "wat is gender of keshav"
+Intent: find_student_attribute
+Entities: student_name=Keshav, attribute=Gender
+Filters: Student name contains 'Keshav'
+Aggregation: None
+Normalized Question: What is the gender of the student named Keshav?
+
+User Question: "how many stdents enrolld in 2024"
+Intent: count_students
+Entities: year=2024
+Filters: Enrollment date in year 2024
+Aggregation: COUNT
+Normalized Question: How many students enrolled in the year 2024?
+
+User Question: "show me all students from delhi who owes money"
+Intent: list_students
+Entities: location=Delhi, payment_status=has_balance
+Filters: Address contains 'Delhi' AND Balance_Due_Amount > 0
+Aggregation: None
+Normalized Question: List all students from Delhi who have an outstanding balance.
+
+Now analyze:
+User Question: {question}
+"""
+)
+
+normalize_chain = normalization_prompt | llm | StrOutputParser()
+
+# --- Enhanced SQL Generation Prompt ---
+enhanced_sql_prompt = PromptTemplate.from_template(
+    """You are an expert SQL query generator for Snowflake. Generate a precise SQL query based on the normalized question and schema.
 
 Schema:
 {schema}
 
-Rules:
-1. Use unified_students table.
-2. Use underscores, not spaces (Student_Name, not Student Name).
-3. Quote mixed-case columns.
-4. Do not quote STUDENT_ID, FILE_COUNT, SOURCE_FILES.
+Normalized Query Information:
+{normalized_info}
 
-Examples:
-Q: Gender of student Keshav?
-A: SELECT "Gender" FROM unified_students WHERE UPPER("Student_Name") LIKE '%KESHAV%'
+STRICT RULES:
+1. Always use table name: {table_name}
+2. Quote mixed-case columns with double quotes: "Student_Name", "Gender", "Course"
+3. Never quote: STUDENT_ID, FILE_COUNT, SOURCE_FILES
+4. For name searches: Use UPPER("Student_Name") LIKE UPPER('%name%')
+5. For date filters: Use "Enrollment_Date" with appropriate LIKE or comparison
+6. For numeric filters: Direct comparison on "Paid_Amount", "Balance_Due_Amount"
+7. Always handle NULL values appropriately
+8. Use proper aggregation functions: COUNT(*), SUM(), AVG()
+9. Add GROUP BY when using aggregations with other columns
+10. Return only the SQL query, no explanations
 
-Q: Students enrolled in 2024?
-A: SELECT "Student_Name", "Enrollment_Date" FROM unified_students WHERE "Enrollment_Date" LIKE '2024%'
+EXAMPLES:
 
-Question: {input}
+Q: What is the gender of the student named Keshav?
+SQL: SELECT "Student_Name", "Gender" FROM {table_name} WHERE UPPER("Student_Name") LIKE UPPER('%Keshav%')
 
-SQL (no markdown):"""
+Q: How many students enrolled in the year 2024?
+SQL: SELECT COUNT(*) as student_count FROM {table_name} WHERE "Enrollment_Date" LIKE '2024%'
+
+Q: List all students from Delhi who have an outstanding balance.
+SQL: SELECT "Student_Name", "Address", "Balance_Due_Amount" FROM {table_name} WHERE UPPER("Address") LIKE UPPER('%Delhi%') AND "Balance_Due_Amount" > 0
+
+Q: What is the total amount paid by all students?
+SQL: SELECT SUM("Paid_Amount") as total_paid FROM {table_name} WHERE "Paid_Amount" IS NOT NULL
+
+Q: Show students grouped by course with count
+SQL: SELECT "Course", COUNT(*) as student_count FROM {table_name} GROUP BY "Course" ORDER BY student_count DESC
+
+Now generate SQL for:
+{normalized_info}
+
+SQL Query (no markdown, no explanation):"""
 )
 
+def normalize_query(question):
+    """Normalize and understand user's natural language question"""
+    try:
+        normalized = normalize_chain.invoke({"question": question})
+        print(f"\n🔍 Normalized Query:\n{normalized}")
+        return normalized
+    except Exception as e:
+        print(f"⚠️ Normalization warning: {e}")
+        return f"Intent: general_query\nNormalized Question: {question}"
+
 def generate_sql(question):
-    raw = (sql_prompt | llm | StrOutputParser()).invoke({"input": question, "schema": MINIMAL_SCHEMA})
+    """Generate SQL with normalization"""
+    # Step 1: Normalize the query
+    normalized_info = normalize_query(question)
+    
+    # Step 2: Generate SQL from normalized query
+    raw = (enhanced_sql_prompt | llm | StrOutputParser()).invoke({
+        "schema": ENHANCED_SCHEMA,
+        "normalized_info": normalized_info,
+        "table_name": UNIFIED_TABLE_NAME
+    })
+    
     sql = raw.strip().removeprefix("```sql").removeprefix("```").removesuffix("```").strip()
+    
+    # Step 3: Validate and clean SQL
+    sql = validate_and_clean_sql(sql)
+    
+    print(f"\n📝 Generated SQL:\n{sql}")
+    return sql
+
+def validate_and_clean_sql(sql):
+    """Validate and clean the generated SQL safely"""
+    # ✅ 1. Remove comments
+    sql = re.sub(r'--.*', '', sql)  # Remove single-line comments
+    sql = re.sub(r'/\*.*?\*/', '', sql, flags=re.S)  # Remove multi-line comments
+
+    # ✅ 2. Trim whitespace
+    sql = sql.strip()
+
+    # ✅ 3. Ensure it starts with SELECT (for read-only safety)
+    if not sql.upper().startswith("SELECT"):
+        raise ValueError("Generated query must start with SELECT")
+
+    # ✅ 4. Disallow dangerous SQL operations
+    dangerous_keywords = [
+        "DROP", "DELETE", "UPDATE", "INSERT",
+        "TRUNCATE", "ALTER", "CREATE", "EXEC", "CALL"
+    ]
+    for word in dangerous_keywords:
+        if re.search(rf'\b{word}\b', sql, re.IGNORECASE):
+            raise ValueError(f"Query contains dangerous operation: {word}")
+
+    # ✅ 5. Replace incorrect table name references if needed
+    sql = re.sub(
+        r'\bunified_students\b',
+        UNIFIED_TABLE_NAME,
+        sql,
+        flags=re.IGNORECASE
+    )
+
+    # ✅ 6. Ensure correct table name is present
+    if UNIFIED_TABLE_NAME.lower() not in sql.lower():
+        raise ValueError(f"Query must use {UNIFIED_TABLE_NAME} table")
+
+    # ✅ 7. Normalize spaces
+    sql = re.sub(r'\s+', ' ', sql).strip()
+
     return sql
 
 # --- Limited Query Tool ---
@@ -165,42 +333,109 @@ class LimitedQueryTool(QuerySQLDatabaseTool):
 
 execute_query = LimitedQueryTool(db=db)
 
-# --- Answer Prompt ---
-answer_prompt = PromptTemplate.from_template(
-    """Answer briefly (2–3 sentences).
+# --- Enhanced Answer Prompt ---
+enhanced_answer_prompt = PromptTemplate.from_template(
+    """Provide a clear, concise answer to the user's question based on the query results.
 
-Question: {question}
-Results: {result}
+Original Question: {question}
+Query Results: {result}
+
+Guidelines:
+- Answer directly and conversationally (2-4 sentences)
+- Include specific numbers, names, or values from results
+- If no results: explain that no matching data was found
+- If multiple results: summarize key findings
+- Be precise with numbers and dates
 
 Answer:"""
 )
-answer_chain = answer_prompt | llm | StrOutputParser()
+answer_chain = enhanced_answer_prompt | llm | StrOutputParser()
 
 # -------------------------------------------------------------------
-# ✅ FastAPI endpoint-compatible function
+# ✅ FastAPI endpoint-compatible function with enhanced error handling
 # -------------------------------------------------------------------
 def ask_question(question: str):
+    """
+    Main function to process natural language questions with normalization
+    """
     try:
+        # Validate input
+        if not question or len(question.strip()) < 3:
+            return {
+                "question": question,
+                "sql_query": None,
+                "result": None,
+                "answer": "Please provide a valid question."
+            }
+        
+        print(f"\n{'='*70}")
+        print(f"❓ Question: {question}")
+        print(f"{'='*70}")
+        
+        # Generate SQL with normalization
         sql = generate_sql(question)
+        
+        # Execute query
         result = execute_query.invoke(sql)
-        if not result:
+        
+        # Handle empty results
+        if not result or result.strip() == "[]":
             return {
                 "question": question,
                 "sql_query": sql,
                 "result": [],
-                "answer": "No matching data found."
+                "answer": "No matching data found for your query."
             }
-        answer = answer_chain.invoke({"question": question, "result": result[:1500]})
+        
+        # Generate natural language answer
+        answer = answer_chain.invoke({
+            "question": question,
+            "result": result[:1500]
+        })
+        
         return {
             "question": question,
             "sql_query": sql,
             "result": result,
             "answer": answer.strip()
         }
-    except Exception as e:
+        
+    except ValueError as ve:
+        print(f"❌ Validation Error: {ve}")
         return {
             "question": question,
             "sql_query": None,
             "result": None,
-            "answer": f"Error: {str(e)}"
+            "answer": f"Invalid query: {str(ve)}"
         }
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return {
+            "question": question,
+            "sql_query": None,
+            "result": None,
+            "answer": f"I encountered an error processing your question. Please try rephrasing it or make it more specific."
+        }
+
+# --- Optional: Interactive testing mode ---
+if __name__ == "__main__":
+    print("\n" + "="*70)
+    print("🎯 Interactive Testing Mode")
+    print("="*70)
+    
+    test_questions = [
+        "wat is gender of keshav",
+        "how many stdents enrolld in 2024",
+        "show me all students from delhi who owes money",
+        "total amount paid by everyone",
+        "list all courses with student count"
+    ]
+    
+    print("\n🧪 Testing with sample questions:\n")
+    for q in test_questions:
+        result = ask_question(q)
+        print(f"\n{'='*70}")
+        print(f"Q: {q}")
+        print(f"A: {result['answer']}")
+        print(f"SQL: {result['sql_query']}")
+        print(f"{'='*70}")
