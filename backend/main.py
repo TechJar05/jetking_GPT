@@ -5,6 +5,7 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from powerbi_auth import router as powerbi_router
 import requests
 import logging
 import json
@@ -26,7 +27,7 @@ TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 
 # Initialize FastAPI
 app = FastAPI()
-
+app.include_router(powerbi_router)
 # Allow all origins (you can restrict later)
 app.add_middleware(
     CORSMiddleware,
