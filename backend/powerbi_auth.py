@@ -274,6 +274,21 @@ async def powerbi_callback(request: Request):
         "token_key": user_key,
         "expires_in": expires_in
     })
+    
+
+@router.get("/api/powerbi/reports")
+async def list_reports(token_key: str):
+    """
+    List all Power BI reports for the authenticated user.
+    """
+    access_token = get_valid_token_for(token_key)
+    url = "https://api.powerbi.com/v1.0/myorg/reports"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {access_token}"})
+    if resp.status_code != 200:
+        logger.error("Power BI API error: %s", resp.text)
+        raise HTTPException(status_code=400, detail=f"Power BI API error: {resp.text}")
+    return resp.json()
+
 
 
 # -----------------------------
